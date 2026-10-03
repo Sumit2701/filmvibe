@@ -4,21 +4,17 @@ import UIKit
 @MainActor
 final class TuningPreviewModel: ObservableObject {
     @Published var image: UIImage?
-    @Published var hasSource = false
     private let renderer = PreviewRenderer()
-    private var loadedID: String?
-    private var framing = Framing.full
+    private var loading = false
     private var ready = false
     private var last: (Recipe, EngineTuning)?
 
-    func load(_ item: PhotoItem?, library: LibraryStore) {
-        guard let item, item.id != loadedID else { return }
-        loadedID = item.id
-        framing = Framing(crop: item.effectiveCrop, upscale: library.upscaleCrops)
-        ready = false
-        renderer.load(url: library.originalURL(item), captureDRStops: item.captureDRStops) { [weak self] ok, _ in
+    /// Previews on the bundled sample photo (the library keeps no RAWs to develop from).
+    func loadSample() {
+        guard !loading, let url = Bundle.main.url(forResource: "RecipePreview", withExtension: "jpg") else { return }
+        loading = true
+        renderer.load(url: url, captureDRStops: 0) { [weak self] ok, _ in
             guard let self else { return }
-            self.hasSource = ok
             self.ready = ok
             if let (r, t) = self.last { self.render(recipe: r, tuning: t) }
         }
@@ -27,7 +23,7 @@ final class TuningPreviewModel: ObservableObject {
     func render(recipe: Recipe, tuning: EngineTuning) {
         last = (recipe, tuning)
         guard ready else { return }
-        renderer.request(.init(recipe: recipe, tuning: tuning, postExposure: 0, longEdge: 1400, framing: framing) { [weak self] img in
+        renderer.request(.init(recipe: recipe, tuning: tuning, postExposure: 0, longEdge: 1400) { [weak self] img in
             if let img { self?.image = img }
         })
     }
@@ -36,7 +32,6 @@ final class TuningPreviewModel: ObservableObject {
 /// Global engine calibration: the strength of every camera setting step, and the character of each film simulation.
 struct TuningScreen: View {
     @EnvironmentObject private var store: TuningStore
-    @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var app: AppModel
     @StateObject private var preview = TuningPreviewModel()
     @State private var simKey: SimProfileKey = .nostalgicNeg
@@ -70,7 +65,7 @@ struct TuningScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             simKey = app.activeRecipe.filmSimulation.profileKey
-            preview.load(library.items.first, library: library)
+            preview.loadSample()
             refresh()
         }
         .onChange(of: store.tuning) { _, _ in refresh() }
@@ -104,9 +99,6 @@ struct TuningScreen: View {
             Theme.panel
             if let img = preview.image {
                 Image(uiImage: img).resizable().scaledToFit()
-            } else if library.items.isEmpty {
-                Text("Take or import a photo to preview tuning")
-                    .font(.footnote).foregroundStyle(Theme.dim)
             } else {
                 ProgressView()
             }
@@ -345,7 +337,6 @@ struct TuneSlider: View {
 struct SettingsScreen: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var tuning: TuningStore
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -362,7 +353,7 @@ struct SettingsScreen: View {
                         .disabled(!settings.autoSaveToPhotos)
                     Toggle("Upscale 28–70mm crops to 12 MP", isOn: $settings.upscaleCrops)
                 } header: { SectionTitle("Capture") } footer: {
-                    Text("Every shot is a pure Bayer RAW straight off the sensor — no Smart HDR, Deep Fusion or tone mapping. The RAW stays in FilmVibe's library (also visible in the Files app), so you can re-develop it with any recipe later.\n\nFocal lengths other than the physical lenses are centre crops stored with the RAW (change them later in the editor). With upscaling on, crops are enlarged back to full resolution like Fujifilm's Digital Teleconverter; off keeps the native pixels.")
+                    Text("Every shot is a pure Bayer RAW straight off the sensor — no Smart HDR, Deep Fusion or tone mapping. Once it's developed into the final JPEG the RAW is deleted, so FilmVibe only keeps the finished photo. Turn on “Attach RAW” to keep a copy of the RAW in Photos instead.\n\nFocal lengths other than the physical lenses are centre crops. With upscaling on, crops are enlarged back to full resolution like Fujifilm's Digital Teleconverter; off keeps the native pixels.")
                 }
 
                 Section {
@@ -377,16 +368,6 @@ struct SettingsScreen: View {
 
                 Section {
                     LabeledContent("Photos in library", value: "\(library.items.count)")
-                    Button {
-                        library.redevelopAll(tuning: tuning.tuning)
-                    } label: {
-                        HStack {
-                            Text("Re-develop All Photos")
-                            Spacer()
-                            if !library.rendering.isEmpty { ProgressView() }
-                        }
-                    }
-                    .disabled(library.items.isEmpty || !library.rendering.isEmpty)
                     Link(destination: URL(string: "https://fujixweekly.com/fujifilm-x-trans-v-recipes/")!) {
                         Label("Recipes from Fuji X Weekly", systemImage: "safari")
                     }

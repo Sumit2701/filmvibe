@@ -42,8 +42,9 @@ struct CameraScreen: View {
             SettingsScreen()
         }
         .fullScreenCover(isPresented: $showGallery) {
-            GalleryScreen()
+            GalleryScreen(openingOn: library.items.first)
         }
+        .onChange(of: showGallery) { _, open in camera.suspended = open }
         .onAppear { camera.start() }
     }
 
@@ -126,7 +127,7 @@ struct CameraScreen: View {
     private var viewfinder: some View {
         GeometryReader { geo in
             ZStack {
-                FilmPreview(camera: camera)
+                FilmPreview(camera: camera, paused: showRecipes || showSettings || showGallery)
                 if settings.showGrid { GridOverlay() }
                 if let p = focusPoint {
                     FocusMarker()
@@ -301,7 +302,6 @@ struct LastShotThumb: View {
                     .scaledToFill()
                     .frame(width: 54, height: 54)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .id(library.revision)
             } else {
                 Image(systemName: "photo.on.rectangle")
                     .foregroundStyle(Theme.dim)

@@ -1,4 +1,5 @@
 import CoreImage
+import CryptoKit
 import UIKit
 
 /// Renders one photo with changing recipes off the main thread. Requests that arrive while
@@ -90,59 +91,132 @@ final class PreviewRenderer {
     }
 }
 
-/// Small renders of every recipe on one sample photo, for the recipe browser.
-@MainActor
-final class RecipeThumbnailer: ObservableObject {
+/// Small renders of every recipe on one fixed photo bundled with the app (RecipePreview.jpg),
+/// for the recipe browser. Results are kept in memory and on disk, so each recipe is developed
+/// once per tuning and app build (engine changes alter the look).
+final class RecipeThumbnailer {
     static let shared = RecipeThumbnailer()
 
-    @Published private(set) var revision = 0
-    private let queue = DispatchQueue(label: "fv.thumbs", qos: .utility)
-    private var session: DevelopSession?          // queue-confined
-    private var sourceID: String?
-    private var framing = Framing.full
-    private var cache: [String: UIImage] = [:]
-    private var inFlight: Set<String> = []
-    private var tuningVersion = -1
-
-    func setSource(_ item: PhotoItem?, library: LibraryStore) {
-        guard let item, item.id != sourceID else { return }
-        sourceID = item.id
-        framing = Framing(crop: item.effectiveCrop, upscale: library.upscaleCrops)
-        cache.removeAll()
-        inFlight.removeAll()
-        let url = library.originalURL(item), dr = item.captureDRStops
-        queue.async { self.session = DevelopSession(url: url, captureDRStops: dr) }
-        revision &+= 1
+    struct Key: Hashable {
+        var recipe: Recipe
+        var tuningVersion: Int
     }
 
-    var hasSource: Bool { sourceID != nil }
+    /// Thumbnails are shown at 58 pt.
+    private static let edge: CGFloat = 180
+    private static let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("RecipeThumbs", isDirectory: true)
+    private static let buildStamp: String = {
+        let date = Bundle.main.executableURL.flatMap {
+            try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        }
+        return "\(date?.timeIntervalSince1970 ?? 0)"
+    }()
 
-    func image(for recipe: Recipe, tuning: EngineTuning, version: Int) -> UIImage? {
-        if version != tuningVersion {
-            tuningVersion = version
-            cache.removeAll()
-            inFlight.removeAll()
+    private let lock = NSLock()
+    private var memory: [Key: UIImage] = [:]      // lock-guarded
+    private var latestVersion = -1                // lock-guarded
+
+    private let queue = DispatchQueue(label: "fv.thumbs", qos: .userInitiated)
+    private var source: CIImage?                  // queue-confined
+    private var dir: URL?                         // queue-confined
+    private var dirVersion = -1                   // queue-confined
+
+    func cached(_ key: Key) -> UIImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return memory[key]
+    }
+
+    func thumbnail(_ key: Key, tuning: EngineTuning) async -> UIImage? {
+        lock.lock()
+        if key.tuningVersion > latestVersion {
+            latestVersion = key.tuningVersion
+            memory.removeAll()
         }
-        let key = "\(recipe.hashValue)"
-        if let img = cache[key] { return img }
-        guard sourceID != nil, !inFlight.contains(key) else { return nil }
-        inFlight.insert(key)
-        let v = version, framing = framing
-        queue.async {
-            let img = autoreleasepool { () -> UIImage? in
-                guard let ci = self.session?.render(recipe: recipe, tuning: tuning, postExposure: 0, longEdge: 220, framing: framing),
-                      let cg = FilmEngine.shared.cgImage(ci) else { return nil }
-                return UIImage(cgImage: cg)
-            }
-            DispatchQueue.main.async {
-                guard v == self.tuningVersion else { return }
-                self.inFlight.remove(key)
-                if let img {
-                    self.cache[key] = img
-                    self.revision &+= 1
-                }
-            }
+        let hit = memory[key]
+        lock.unlock()
+        if let hit { return hit }
+
+        let img = await withCheckedContinuation { cont in
+            queue.async { cont.resume(returning: self.load(key, tuning: tuning)) }
         }
-        return nil
+        if let img {
+            lock.lock()
+            if key.tuningVersion == latestVersion { memory[key] = img }
+            lock.unlock()
+        }
+        return img
+    }
+
+    private func isCurrent(_ version: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return version == latestVersion
+    }
+
+    private func load(_ key: Key, tuning: EngineTuning) -> UIImage? {
+        guard isCurrent(key.tuningVersion), let dir = directory(for: key.tuningVersion, tuning: tuning) else { return nil }
+        var look = key.recipe
+        look.id = ""
+        look.name = ""
+        look.category = ""
+        look.source = nil
+        let file = dir.appendingPathComponent(Self.digest(Self.encode(look)) + ".jpg")
+        if let img = UIImage(contentsOfFile: file.path)?.preparingForDisplay() { return img }
+
+        return autoreleasepool { () -> UIImage? in
+            guard let src = sourceImage() else { return nil }
+            // referenceLongEdge stays at the full-frame default so grain and sharpening read as on a real photo.
+            let ctx = RenderContext(source: .processed, processedLongEdge: Self.edge)
+            let p = ParamResolver.resolve(key.recipe, tuning: tuning, context: ctx)
+            let out = FilmEngine.shared.apply(src, p)
+            guard let cg = FilmEngine.shared.cgImage(out) else { return nil }
+            let img = UIImage(cgImage: cg)
+            try? img.jpegData(compressionQuality: 0.9)?.write(to: file, options: .atomic)
+            return img
+        }
+    }
+
+    /// The on-disk folder for the current tuning; folders for other tunings are removed.
+    private func directory(for version: Int, tuning: EngineTuning) -> URL? {
+        if version == dirVersion { return dir }
+        let name = Self.digest(Self.encode(tuning), Data(Self.buildStamp.utf8))
+        let url = Self.root.appendingPathComponent(name, isDirectory: true)
+        let fm = FileManager.default
+        for old in (try? fm.contentsOfDirectory(at: Self.root, includingPropertiesForKeys: nil)) ?? []
+        where old.lastPathComponent != name {
+            try? fm.removeItem(at: old)
+        }
+        try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+        dir = url
+        dirVersion = version
+        return url
+    }
+
+    /// The bundled photo, downscaled once to thumbnail size.
+    private func sourceImage() -> CIImage? {
+        if let source { return source }
+        guard let url = Bundle.main.url(forResource: "RecipePreview", withExtension: "jpg"),
+              let img = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return nil }
+        let scale = Self.edge / max(img.extent.width, img.extent.height)
+        let scaled = img.applyingFilter("CILanczosScaleTransform",
+                                        parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1])
+        let e = scaled.extent.integral
+        guard let cg = FilmEngine.shared.cgImage(scaled.cropped(to: e).translatedToOrigin()) else { return nil }
+        source = CIImage(cgImage: cg)
+        return source
+    }
+
+    private static func encode<T: Encodable>(_ value: T) -> Data {
+        let enc = JSONEncoder()
+        enc.outputFormatting = .sortedKeys
+        return (try? enc.encode(value)) ?? Data()
+    }
+
+    private static func digest(_ parts: Data...) -> String {
+        var h = SHA256()
+        parts.forEach { h.update(data: $0) }
+        return h.finalize().prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 }

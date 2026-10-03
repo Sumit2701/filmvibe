@@ -58,14 +58,19 @@ final class FilmPreviewMTKView: MTKView, MTKViewDelegate {
 
 struct FilmPreview: UIViewRepresentable {
     let camera: CameraController
+    /// Stops drawing (the film render runs on the GPU every frame) while the viewfinder is covered.
+    var paused = false
 
     func makeUIView(context: Context) -> FilmPreviewMTKView {
         let v = FilmPreviewMTKView()
         let cam = camera
         v.frameProvider = { cam.currentFrame() }
         v.onDrawableSize = { size in cam.setPreviewTarget(longEdge: max(size.width, size.height)) }
+        v.isPaused = paused
         return v
     }
 
-    func updateUIView(_ uiView: FilmPreviewMTKView, context: Context) {}
+    func updateUIView(_ uiView: FilmPreviewMTKView, context: Context) {
+        if uiView.isPaused != paused { uiView.isPaused = paused }
+    }
 }

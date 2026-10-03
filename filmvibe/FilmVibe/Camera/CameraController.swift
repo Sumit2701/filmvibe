@@ -71,6 +71,13 @@ final class CameraController: NSObject, ObservableObject {
     var onPhoto: ((CapturedPhoto) -> Void)?
     /// Focal length to start with (restored from settings).
     var preferredFocal: Int = 26
+    /// Keeps the session off while the gallery covers the camera, even if the app returns to the foreground.
+    var suspended = false {
+        didSet {
+            guard suspended != oldValue else { return }
+            if suspended { stop() } else { start() }
+        }
+    }
 
     // MARK: AVFoundation
     let session = AVCaptureSession()
@@ -110,6 +117,7 @@ final class CameraController: NSObject, ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
+        guard !suspended else { return }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             startSession()

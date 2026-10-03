@@ -7,10 +7,7 @@ struct RecipeBrowser: View {
 
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var store: RecipeStore
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var tuning: TuningStore
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var thumbs = RecipeThumbnailer.shared
     @State private var query = ""
     @State private var editing: Recipe?
     @State private var simFilter: SimProfileKey?
@@ -66,7 +63,6 @@ struct RecipeBrowser: View {
             .sheet(item: $editing) { r in
                 RecipeEditor(recipe: r)
             }
-            .onAppear { thumbs.setSource(library.items.first, library: library) }
         }
     }
 
@@ -158,13 +154,13 @@ struct RecipeBrowser: View {
 struct RecipeThumb: View {
     let recipe: Recipe
     @EnvironmentObject private var tuning: TuningStore
-    @ObservedObject private var thumbs = RecipeThumbnailer.shared
+    @State private var rendered: UIImage?
 
     var body: some View {
-        let img = thumbs.image(for: recipe, tuning: tuning.tuning, version: tuning.version)
+        let key = RecipeThumbnailer.Key(recipe: recipe, tuningVersion: tuning.version)
         ZStack {
             RoundedRectangle(cornerRadius: 8).fill(Theme.panel2)
-            if let img {
+            if let img = RecipeThumbnailer.shared.cached(key) ?? rendered {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
@@ -176,7 +172,9 @@ struct RecipeThumb: View {
         }
         .frame(width: 58, height: 58)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .id(thumbs.revision)
+        .task(id: key) {
+            if let img = await RecipeThumbnailer.shared.thumbnail(key, tuning: tuning.tuning) { rendered = img }
+        }
     }
 }
 

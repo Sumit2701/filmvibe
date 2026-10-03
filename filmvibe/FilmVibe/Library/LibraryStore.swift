@@ -48,6 +48,7 @@ final class LibraryStore: ObservableObject {
     init() {
         try? FileManager.default.createDirectory(at: AppPaths.library, withIntermediateDirectories: true)
         load()
+        discardDevelopedOriginals()
     }
 
     // MARK: Paths
@@ -57,7 +58,6 @@ final class LibraryStore: ObservableObject {
     nonisolated func renderURL(_ item: PhotoItem) -> URL { dir(item.id).appendingPathComponent("render.jpg") }
     nonisolated func thumbURL(_ item: PhotoItem) -> URL { dir(item.id).appendingPathComponent("thumb.jpg") }
     nonisolated private func metaURL(_ id: String) -> URL { dir(id).appendingPathComponent("item.json") }
-
     func load() {
         let fm = FileManager.default
         let dirs = (try? fm.contentsOfDirectory(at: AppPaths.library, includingPropertiesForKeys: nil)) ?? []
@@ -96,10 +96,12 @@ final class LibraryStore: ObservableObject {
         }
         if let crop, crop > 1.001 { item.crop = crop }
         try? FileManager.default.createDirectory(at: dir(id), withIntermediateDirectories: true)
-        try? data.write(to: originalURL(item))
+        // The DNG is ~25 MB: write it off the main thread. develop() runs on the same serial queue, so it's on disk first.
+        let url = originalURL(item)
+        renderQueue.async { try? data.write(to: url) }
         writeMeta(item)
         items.insert(item, at: 0)
-        develop(item, tuning: tuning, saveToPhotos: saveToPhotos, includeRAW: includeRAW)
+        develop(item, tuning: tuning, saveToPhotos: saveToPhotos, includeRAW: includeRAW, discardOriginal: true)
         return item
     }
 
@@ -117,8 +119,9 @@ final class LibraryStore: ObservableObject {
     // MARK: Develop
 
     /// Renders the full-resolution JPEG + thumbnail for an item; optionally saves to Photos.
+    /// `discardOriginal` deletes the RAW / imported original once the JPEG exists (and Photos has it, if saving).
     func develop(_ item: PhotoItem, tuning: EngineTuning, saveToPhotos: Bool = false, includeRAW: Bool = false,
-                 completion: ((URL?) -> Void)? = nil) {
+                 discardOriginal: Bool = false, completion: ((URL?) -> Void)? = nil) {
         rendering.insert(item.id)
         let originalURL = originalURL(item), renderURL = renderURL(item), thumbURL = thumbURL(item)
         let framing = Framing(crop: item.effectiveCrop, upscale: upscaleCrops)
@@ -158,18 +161,31 @@ final class LibraryStore: ObservableObject {
                 if ok && saveToPhotos {
                     PhotoSaver.save(jpegURL: renderURL, rawURL: includeRAW && item.isRAW ? originalURL : nil) { err in
                         self.lastSave = SaveResult(ok: err == nil, message: err ?? "Saved to Photos")
+                        if discardOriginal { self.removeFile(originalURL) }
                         completion?(err == nil ? renderURL : nil)
                     }
                 } else {
+                    if ok && discardOriginal { self.removeFile(originalURL) }
                     completion?(ok ? renderURL : nil)
                 }
             }
         }
     }
 
-    /// Re-renders every photo with the current engine tuning (e.g. after calibrating the look).
-    func redevelopAll(tuning: EngineTuning) {
-        for item in items { develop(item, tuning: tuning) }
+    /// Deletes originals left over from photos that already have their developed JPEG.
+    private func discardDevelopedOriginals() {
+        let pairs = items.map { (originalURL($0), renderURL($0)) }
+        renderQueue.async {
+            let fm = FileManager.default
+            for (original, render) in pairs where fm.fileExists(atPath: render.path) {
+                try? fm.removeItem(at: original)
+            }
+        }
+    }
+
+    /// Runs on the render queue so it never races a develop that's still reading the file.
+    private func removeFile(_ url: URL) {
+        renderQueue.async { try? FileManager.default.removeItem(at: url) }
     }
 
     // MARK: Thumbnails
