@@ -9,37 +9,19 @@ An iPhone camera that shoots RAW and develops every photo with a Fujifilm film�
 - **Engine Tuning** lets you change how strong every setting is and adjust each film simulation's profile. Export or paste the tuning as JSON.
 - Keeps only the developed JPEG. You can optionally attach the DNG when saving to Photos.
 
-## Download
+## Build it yourself
 
-FilmVibe isn't on the App Store. Each release includes an unsigned `.ipa` that you sideload:
+FilmVibe isn't on the App Store, and there are no prebuilt downloads. Build it and install it on your own iPhone with Xcode.
 
-1. Download `FilmVibe.ipa` from the [latest release](https://github.com/Sumit2701/filmvibe/releases/latest).
-2. Install it with [AltStore](https://altstore.io), [SideStore](https://sidestore.io) or [Sideloadly](https://sideloadly.io). They sign the app with your own Apple ID.
-3. On the iPhone, turn on **Settings → Privacy & Security → Developer Mode** if iOS asks for it.
-
-With a free Apple ID the app stops opening after 7 days. AltStore and SideStore can refresh it automatically; otherwise install it again.
-
-Requires iOS 17 or later. It's developed and tested on an iPhone 13.
-
-## Build from source
-
-You need Xcode 26 or later and an iPhone, because the simulator has no camera.
+You need a Mac with Xcode 26 or later, and an iPhone on iOS 17 or later. The simulator has no camera. The app is developed and tested on an iPhone 13.
 
 1. Open `filmvibe/FilmVibe.xcodeproj`.
-2. Select the **FilmVibe** target. Under **Signing & Capabilities**, pick your team and change the bundle identifier to something unique.
-3. Run it on your device.
+2. Select the **FilmVibe** target. Under **Signing & Capabilities**, pick your team and change the bundle identifier to something unique. A free Apple ID works.
+3. Connect your iPhone and run the app on it. If iOS asks, turn on **Settings → Privacy & Security → Developer Mode**.
 
 If Xcode reports a missing Metal toolchain, run `xcodebuild -downloadComponent MetalToolchain`.
 
-To build an unsigned IPA locally, run `filmvibe/scripts/build-ipa.sh`. It writes `filmvibe/build/FilmVibe.ipa`.
-
-### Releasing
-
-Push a version tag. GitHub Actions builds the IPA and attaches it to a new release:
-
-```sh
-git tag v1.0 && git push origin v1.0
-```
+With a free Apple ID the app stops opening after 7 days. Run it from Xcode again to reinstall it.
 
 ## Project layout
 
