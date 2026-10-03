@@ -1,0 +1,6 @@
+build/
+Tools/fvtest/fvtest
+Tools/fvtest/k.air
+Tools/fvtest/k.metallib
+*.xcuserstate
+xcuserdata/
