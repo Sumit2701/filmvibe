@@ -13,7 +13,7 @@ An iPhone camera that shoots RAW and develops every photo with a Fujifilm film�
 
 FilmVibe isn't on the App Store. Each release includes an unsigned `.ipa` that you sideload:
 
-1. Download `FilmVibe.ipa` from the [latest release](https://github.com/Sumit2701/fun/releases/latest).
+1. Download `FilmVibe.ipa` from the [latest release](https://github.com/Sumit2701/filmvibe/releases/latest).
 2. Install it with [AltStore](https://altstore.io), [SideStore](https://sidestore.io) or [Sideloadly](https://sideloadly.io). They sign the app with your own Apple ID.
 3. On the iPhone, turn on **Settings → Privacy & Security → Developer Mode** if iOS asks for it.
 
