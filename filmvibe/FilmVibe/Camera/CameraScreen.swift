@@ -42,7 +42,8 @@ struct CameraScreen: View {
             SettingsScreen()
         }
         .fullScreenCover(isPresented: $showGallery) {
-            GalleryScreen(openingOn: library.items.first)
+            GalleryScreen()
+                .presentationBackground(.clear)
         }
         .onChange(of: showGallery) { _, open in camera.suspended = open }
         .onAppear { camera.start() }

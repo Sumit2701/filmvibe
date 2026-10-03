@@ -308,14 +308,34 @@ struct EditorScreen: View {
 // MARK: - Zoomable image
 
 struct ZoomableImage: UIViewRepresentable {
-    let image: UIImage
+    let image: UIImage?
+    /// Photo-viewer gestures, all optional so the editor keeps plain pinch / double-tap zoom.
+    var onTap: (() -> Void)?
+    var onSwipeUp: (() -> Void)?
+    /// 0…1 while the photo is dragged down (0 again if it springs back).
+    var onDismissProgress: ((CGFloat) -> Void)?
+    var onDismiss: (() -> Void)?
 
     func makeUIView(context: Context) -> ZoomView { ZoomView() }
-    func updateUIView(_ v: ZoomView, context: Context) { v.setImage(image) }
+    func updateUIView(_ v: ZoomView, context: Context) {
+        v.setImage(image)
+        v.onTap = onTap
+        v.onSwipeUp = onSwipeUp
+        v.onDismissProgress = onDismissProgress
+        v.onDismiss = onDismiss
+    }
 
     final class ZoomView: UIScrollView, UIScrollViewDelegate {
+        /// The zoomed view; the image sits inside it so the swipe-down transform never touches the zoom scale.
+        private let content = UIView()
         private let imageView = UIImageView()
         private var lastSize: CGSize = .zero
+        private let panDelegate = VerticalPanDelegate()
+        private var swipingUp = false
+        var onTap: (() -> Void)?
+        var onSwipeUp: (() -> Void)?
+        var onDismissProgress: ((CGFloat) -> Void)?
+        var onDismiss: (() -> Void)?
 
         init() {
             super.init(frame: .zero)
@@ -325,14 +345,23 @@ struct ZoomableImage: UIViewRepresentable {
             showsVerticalScrollIndicator = false
             showsHorizontalScrollIndicator = false
             imageView.contentMode = .scaleAspectFit
-            addSubview(imageView)
+            imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            content.addSubview(imageView)
+            addSubview(content)
             let dbl = UITapGestureRecognizer(target: self, action: #selector(doubleTap(_:)))
             dbl.numberOfTapsRequired = 2
             addGestureRecognizer(dbl)
+            let single = UITapGestureRecognizer(target: self, action: #selector(singleTap))
+            single.require(toFail: dbl)
+            addGestureRecognizer(single)
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(verticalPan(_:)))
+            panDelegate.owner = self
+            pan.delegate = panDelegate
+            addGestureRecognizer(pan)
         }
         required init?(coder: NSCoder) { fatalError() }
 
-        func setImage(_ img: UIImage) {
+        func setImage(_ img: UIImage?) {
             imageView.image = img
             setNeedsLayout()
         }
@@ -342,23 +371,75 @@ struct ZoomableImage: UIViewRepresentable {
             if bounds.size != lastSize {
                 lastSize = bounds.size
                 zoomScale = 1
-                imageView.frame = bounds
+                content.frame = CGRect(origin: .zero, size: bounds.size)
+                imageView.frame = content.bounds
                 contentSize = bounds.size
             }
         }
 
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { content }
+
+        @objc private func singleTap() { onTap?() }
 
         @objc private func doubleTap(_ g: UITapGestureRecognizer) {
             if zoomScale > 1 {
                 setZoomScale(1, animated: true)
             } else {
-                let p = g.location(in: imageView)
+                let p = g.location(in: content)
                 let s: CGFloat = 3
                 let w = bounds.width / s, h = bounds.height / s
                 zoom(to: CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h), animated: true)
             }
         }
+
+        // MARK: Swipe down to close / up for info (only when not zoomed in)
+
+        fileprivate func shouldBeginVerticalPan(_ pan: UIPanGestureRecognizer) -> Bool {
+            guard zoomScale <= minimumZoomScale + 0.01 else { return false }
+            let v = pan.velocity(in: self)
+            guard abs(v.y) > abs(v.x) * 1.2 else { return false }
+            swipingUp = v.y < 0
+            return swipingUp ? onSwipeUp != nil : onDismiss != nil
+        }
+
+        @objc private func verticalPan(_ g: UIPanGestureRecognizer) {
+            let t = g.translation(in: self), v = g.velocity(in: self)
+            if swipingUp {
+                if g.state == .ended && (t.y < -40 || v.y < -400) { onSwipeUp?() }
+                return
+            }
+            let progress = min(max(t.y / max(bounds.height * 0.4, 1), 0), 1)
+            switch g.state {
+            case .changed:
+                let s = 1 - 0.3 * progress
+                imageView.transform = CGAffineTransform(translationX: t.x, y: t.y).scaledBy(x: s, y: s)
+                onDismissProgress?(progress)
+            case .ended where (t.y > 100 && v.y > -200) || v.y > 800:
+                onDismiss?()
+            case .ended, .cancelled, .failed:
+                UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0) {
+                    self.imageView.transform = .identity
+                }
+                onDismissProgress?(0)
+            default:
+                break
+            }
+        }
+    }
+}
+
+private final class VerticalPanDelegate: NSObject, UIGestureRecognizerDelegate {
+    weak var owner: ZoomableImage.ZoomView?
+
+    func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        guard let owner, let pan = g as? UIPanGestureRecognizer else { return false }
+        return owner.shouldBeginVerticalPan(pan)
+    }
+
+    /// The page swipe (and the zoom scroll) wait until this pan has decided it isn't a vertical swipe.
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        guard let owner, other is UIPanGestureRecognizer, let scroll = other.view as? UIScrollView else { return false }
+        return owner.isDescendant(of: scroll)
     }
 }
 

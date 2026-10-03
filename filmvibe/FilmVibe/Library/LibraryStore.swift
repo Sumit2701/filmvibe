@@ -110,6 +110,9 @@ final class LibraryStore: ObservableObject {
         writeMeta(item)
     }
 
+    /// No developed JPEG and nothing in flight: only the editor (which still has the original) can open it.
+    func developFailed(_ item: PhotoItem) -> Bool { item.renderedAt == nil && !rendering.contains(item.id) }
+
     func delete(_ item: PhotoItem) {
         try? FileManager.default.removeItem(at: dir(item.id))
         items.removeAll { $0.id == item.id }
